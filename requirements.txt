@@ -1,0 +1,54 @@
+# ============================================================
+# SENTINEL — requirements.txt
+# Python 3.10 | conda env: sentinel_env | Mac mini M4
+# ============================================================
+
+# ── Core ML ─────────────────────────────────────────────────
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.24.0
+
+# ── HuggingFace — RoBERTa, DPR, NLI ────────────────────────
+transformers>=4.38.0
+sentence-transformers>=2.6.0
+datasets>=2.18.0
+tokenizers>=0.15.0
+accelerate>=0.27.0
+
+# ── CLIP (Module 1 — image branch) ──────────────────────────
+# NOTE: Use open-clip-torch, NOT clip-by-openai
+open-clip-torch>=2.24.0
+
+# ── PyTorch Geometric (Module 3 — HGT) ──────────────────────
+# torch_scatter and torch_sparse are NOT required for this setup
+torch-geometric>=2.5.0
+
+# ── NLP — SpaCy (Module 2 — claim extraction) ───────────────
+spacy>=3.7.0
+# After install, run: python -m spacy download en_core_web_sm
+
+# ── Retrieval — FAISS (Module 2) ────────────────────────────
+faiss-cpu>=1.7.4
+# Use faiss-gpu instead if you have CUDA:
+# faiss-gpu>=1.7.4
+
+# ── Live APIs (Module 2 — 3-source retriever) ───────────────
+tavily-python>=0.3.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# ── Image handling ───────────────────────────────────────────
+Pillow>=10.0.0
+
+# ── Streamlit Demo UI ────────────────────────────────────────
+streamlit>=1.32.0
+
+# ── Utilities ────────────────────────────────────────────────
+tqdm>=4.66.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+
+# ── LLaMA-3 / Module 4 ──────────────────────────────────────
+# LLaMA-3 runs via Ollama — no pip install needed for the model
+# Install Ollama separately from: https://ollama.com
+# Then run: ollama pull llama3

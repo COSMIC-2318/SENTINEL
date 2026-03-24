@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pth
+*.pt
+.DS_Storemodels/nli_finetuned/model.safetensors
+models/cross_modal_pretrained/
+models/sentinel_joint/best_model.pt
+data/
+data/
+models/nli_finetuned/model.safetensors
+models/nli_finetuned/tokenizer.json
+.DS_Store
+**/.DS_Store
