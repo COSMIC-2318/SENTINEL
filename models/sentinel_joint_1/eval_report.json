@@ -1,0 +1,26 @@
+{
+  "accuracy": 0.49333333333333335,
+  "f1_macro": 0.33035714285714285,
+  "f1_fake": 0.0,
+  "f1_real": 0.6607142857142857,
+  "precision_macro": 0.24666666666666667,
+  "recall_macro": 0.5,
+  "auc_roc": 0.5014224751066856,
+  "confusion_matrix": [
+    [
+      37,
+      0
+    ],
+    [
+      38,
+      0
+    ]
+  ],
+  "true_negatives": 37,
+  "false_positives": 0,
+  "false_negatives": 38,
+  "true_positives": 0,
+  "test_size": 75,
+  "model_epoch": 1,
+  "model_val_f1": 0.3302752293577982
+}

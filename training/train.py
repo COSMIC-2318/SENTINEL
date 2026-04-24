@@ -1,12 +1,13 @@
 """
 ================================================================
-SENTINEL — Joint End-to-End Training
+SENTINEL — Joint End-to-End Training (WELFake Fine-tuning)
 File: training/train.py
 
-Trains Modules 1, 2, 3 together on FakeNewsNet PolitiFact.
-Module 4 excluded — LLaMA-3 has 8B params, no gradient support.
-
-Output: models/sentinel_joint/best_model.pt
+Changes from previous version:
+  - Loads existing best_model.pt checkpoint before training
+  - Lower learning rate (5e-6) to prevent catastrophic forgetting
+  - WELFake CSV added to create_data_splits call
+  - pos_weight auto-computed from actual dataset labels
 
 Usage:
     cd ~/Ankit/SENTINEL
@@ -43,6 +44,8 @@ DATA_ROOT      = (SENTINEL_ROOT / "data" / "fakenewsnet" /
                   "FakeNewsNet" / "code" / "fakenewsnet_dataset")
 NLI_MODEL_PATH = SENTINEL_ROOT / "models" / "nli_finetuned"
 SAVE_PATH      = SENTINEL_ROOT / "models" / "sentinel_joint"
+CHECKPOINT     = SAVE_PATH / "best_model.pt"
+WELFAKE_CSV    = SENTINEL_ROOT / "data" / "WELFake_Dataset.csv"
 SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
 # ── Device ────────────────────────────────────────────────────
@@ -59,20 +62,21 @@ else:
 # ── Hyperparameters ───────────────────────────────────────────
 CONFIG = {
     "batch_size"   : 8,
-    "learning_rate": 1e-4,
+    "learning_rate": 5e-6,   # ← Lower than before (was 1e-4)
+                             #   Prevents forgetting PolitiFact knowledge
     "epochs"       : 10,
     "dropout"      : 0.3,
     "seed"         : 42,
+    "welfake_max_samples": None,  # None = use all 72K
+                                  # Set to e.g. 10000 for quick test run
 }
 
 
 # ================================================================
-# CLASSIFICATION HEAD
+# CLASSIFICATION HEAD (unchanged from previous version)
 # ================================================================
 class SentinelClassifier(torch.nn.Module):
     """
-    Combines scalar outputs from all 3 modules.
-
     Input: 9-dim vector
         Module 1 fake_prob   [1]
         Module 1 mismatch    [1]
@@ -94,10 +98,9 @@ class SentinelClassifier(torch.nn.Module):
 
 
 # ================================================================
-# MODULE 2 — EVIDENCE SCORES
+# MODULE 2 — EVIDENCE SCORES (unchanged)
 # ================================================================
 def get_evidence_scores(texts, nli_model, nli_tokenizer, device):
-    """6-dim NLI evidence score per article."""
     scores = torch.zeros(len(texts), 6).to(device)
     nli_model.eval()
     with torch.no_grad():
@@ -127,7 +130,7 @@ def get_evidence_scores(texts, nli_model, nli_tokenizer, device):
 
 
 # ================================================================
-# FORWARD PASS
+# FORWARD PASS (unchanged)
 # ================================================================
 def run_step(batch, module1, nli_model, nli_tokenizer,
              classifier, loss_fn, device):
@@ -136,13 +139,11 @@ def run_step(batch, module1, nli_model, nli_tokenizer,
     images = batch["image"]
     labels = batch["label"].to(device)
 
-    # ── Module 1 ──────────────────────────────────────────────
     m1_fake_probs = []
     m1_mismatches = []
     m1_fusions    = []
 
     for i in range(len(texts)):
-        # Denormalise tensor → PIL image
         img_t   = images[i].permute(1, 2, 0).numpy()
         img_t   = ((img_t * [0.26862954, 0.26130258, 0.27577711] +
                     [0.48145466, 0.4578275,  0.40821073]) * 255)
@@ -162,7 +163,6 @@ def run_step(batch, module1, nli_model, nli_tokenizer,
         m1_fake_probs.append(fake_prob)
         m1_mismatches.append(mismatch)
 
-        # ── FIX: .squeeze() removes extra dims [1,256] → [256]
         if fusion is not None:
             if isinstance(fusion, torch.Tensor):
                 m1_fusions.append(fusion.detach().float().squeeze())
@@ -173,21 +173,14 @@ def run_step(batch, module1, nli_model, nli_tokenizer,
         else:
             m1_fusions.append(torch.zeros(256))
 
-    m1_fp   = torch.tensor(m1_fake_probs,
-                            dtype=torch.float32).to(device).unsqueeze(1)
-    m1_mm   = torch.tensor(m1_mismatches,
-                            dtype=torch.float32).to(device).unsqueeze(1)
-    fusions = torch.stack(m1_fusions).to(device)  # [B, 256]
+    m1_fp   = torch.tensor(m1_fake_probs, dtype=torch.float32).to(device).unsqueeze(1)
+    m1_mm   = torch.tensor(m1_mismatches, dtype=torch.float32).to(device).unsqueeze(1)
+    fusions = torch.stack(m1_fusions).to(device)
 
-    # ── Module 2 ──────────────────────────────────────────────
-    ev_scores = get_evidence_scores(
-        texts, nli_model, nli_tokenizer, device
-    )  # [B, 6]
+    ev_scores = get_evidence_scores(texts, nli_model, nli_tokenizer, device)
 
-    # ── Article node [B, 262] ─────────────────────────────────
     article_features = torch.cat([fusions, ev_scores], dim=1)
 
-    # ── Module 3 ──────────────────────────────────────────────
     m3_fake_probs = []
     for i in range(article_features.size(0)):
         feat   = article_features[i].unsqueeze(0).cpu()
@@ -197,22 +190,17 @@ def run_step(batch, module1, nli_model, nli_tokenizer,
             prob = prob.item()
         m3_fake_probs.append(float(prob))
 
-    m3_fp = torch.tensor(m3_fake_probs,
-                          dtype=torch.float32).to(device).unsqueeze(1)
-
-    # ── Combine → [B, 9] ──────────────────────────────────────
+    m3_fp    = torch.tensor(m3_fake_probs, dtype=torch.float32).to(device).unsqueeze(1)
     combined = torch.cat([m1_fp, m1_mm, ev_scores, m3_fp], dim=1)
-
-    # ── Classify ──────────────────────────────────────────────
-    logits = classifier(combined).squeeze(1)
-    loss   = loss_fn(logits, labels)
-    preds  = (torch.sigmoid(logits) > 0.5).long()
+    logits   = classifier(combined).squeeze(1)
+    loss     = loss_fn(logits, labels)
+    preds    = (torch.sigmoid(logits) > 0.5).long()
 
     return loss, preds, labels.long()
 
 
 # ================================================================
-# EVALUATE
+# EVALUATE (unchanged)
 # ================================================================
 def evaluate(loader, module1, nli_model, nli_tokenizer,
              classifier, loss_fn, device):
@@ -232,7 +220,7 @@ def evaluate(loader, module1, nli_model, nli_tokenizer,
             all_labels.extend(labels.cpu().numpy())
 
     avg_loss = total_loss / len(loader)
-    f1       = f1_score(all_labels, all_preds, average="macro")
+    f1       = f1_score(all_labels, all_preds, average="macro", zero_division=0)
     return avg_loss, f1, all_preds, all_labels
 
 
@@ -241,24 +229,28 @@ def evaluate(loader, module1, nli_model, nli_tokenizer,
 # ================================================================
 def train():
     print("=" * 60)
-    print("SENTINEL — Joint End-to-End Training")
+    print("SENTINEL — Fine-tuning on WELFake")
     print("=" * 60)
 
     torch.manual_seed(CONFIG["seed"])
     np.random.seed(CONFIG["seed"])
 
-    print("\n  Loading FakeNewsNet (PolitiFact)...")
-    train_loader, val_loader, test_loader, dataset = create_data_splits(
-        data_root  = str(DATA_ROOT),
-        sources    = ["politifact"],
-        batch_size = CONFIG["batch_size"],
-        num_workers= 0
+    # ── Load data (FakeNewsNet + WELFake) ─────────────────────
+    print("\n  Loading datasets...")
+    train_loader, val_loader, test_loader, combined = create_data_splits(
+        data_root           = str(DATA_ROOT),
+        sources             = ["politifact"],
+        batch_size          = CONFIG["batch_size"],
+        num_workers         = 0,
+        welfake_csv         = str(WELFAKE_CSV),
+        welfake_max_samples = CONFIG["welfake_max_samples"],
     )
 
+    # ── Load modules ──────────────────────────────────────────
     print("\n  Loading Module 1...")
     module1 = Module1()
 
-    print("\n  Loading Module 2 NLI (fine-tuned)...")
+    print("\n  Loading NLI model...")
     if not NLI_MODEL_PATH.exists():
         print("  ❌ Run training/finetune_nli.py first")
         return
@@ -270,25 +262,52 @@ def train():
         param.requires_grad = False
     print("  ✅ NLI loaded and frozen")
 
+    # ── Classifier ────────────────────────────────────────────
     classifier = SentinelClassifier(CONFIG["dropout"]).to(DEVICE)
 
-    fake_count = sum(1 for s in dataset.samples if s["label"] == 1)
-    real_count = sum(1 for s in dataset.samples if s["label"] == 0)
-    pos_weight = torch.tensor([real_count / fake_count]).to(DEVICE)
-    loss_fn    = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    print(f"\n  Fake: {fake_count} | Real: {real_count}")
+    # ── Load checkpoint ───────────────────────────────────────
+    # This is the key change — we continue from the trained model
+    # instead of starting from scratch
+    if CHECKPOINT.exists():
+        print(f"\n  Loading checkpoint: {CHECKPOINT}")
+        ckpt = torch.load(str(CHECKPOINT), map_location=DEVICE)
+        classifier.load_state_dict(ckpt["classifier_state"])
+        prev_f1 = ckpt.get("val_f1", 0.0)
+        print(f"  ✅ Checkpoint loaded (previous best Val F1: {prev_f1:.4f})")
+    else:
+        print("  ⚠️  No checkpoint found — training from scratch")
 
-    optimizer = AdamW(classifier.parameters(),
-                      lr=CONFIG["learning_rate"], weight_decay=0.01)
+    # ── Loss — auto pos_weight from actual label distribution ─
+    # Collect labels from training set to compute real ratio
+    all_labels = []
+    for batch in train_loader:
+        all_labels.extend(batch["label"].tolist())
+    all_labels = torch.tensor(all_labels)
+    real_count = (all_labels == 0).sum().item()
+    fake_count = (all_labels == 1).sum().item()
+
+    # pos_weight < 1 when fake > real (slightly downweights fake)
+    # pos_weight > 1 when real > fake (slightly upweights fake)
+    pos_weight = torch.tensor([real_count / fake_count]).to(DEVICE)
+    print(f"\n  Fake: {fake_count} | Real: {real_count} | "
+          f"pos_weight: {pos_weight.item():.4f}")
+
+    loss_fn   = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    optimizer = AdamW(
+        classifier.parameters(),
+        lr=CONFIG["learning_rate"],
+        weight_decay=0.01
+    )
     scheduler = CosineAnnealingLR(optimizer, T_max=CONFIG["epochs"])
 
     best_val_f1 = 0.0
     best_epoch  = 0
     history     = []
 
-    print(f"\n  Training for {CONFIG['epochs']} epochs")
-    print(f"  Train batches: {len(train_loader)}")
-    print()
+    print(f"\n  Training for {CONFIG['epochs']} epochs | "
+          f"LR: {CONFIG['learning_rate']}")
+    print(f"  Train batches: {len(train_loader)}\n")
 
     for epoch in range(1, CONFIG["epochs"] + 1):
         classifier.train()
@@ -303,18 +322,15 @@ def train():
             )
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                classifier.parameters(), 1.0
-            )
+            torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
             optimizer.step()
 
             train_loss += loss.item()
             correct    += (preds == labels).sum().item()
             total      += labels.size(0)
 
-            if (step + 1) % 10 == 0:
-                print(f"  Epoch {epoch} | "
-                      f"Step {step+1}/{len(train_loader)} | "
+            if (step + 1) % 50 == 0:
+                print(f"  Epoch {epoch} | Step {step+1}/{len(train_loader)} | "
                       f"Loss: {loss.item():.4f} | "
                       f"Acc: {correct/total*100:.1f}%")
 
@@ -351,7 +367,7 @@ def train():
             print(f"  ✅ Best model saved! Val F1: {val_f1:.4f}")
         print()
 
-    # Final test
+    # ── Final test evaluation ─────────────────────────────────
     print("=" * 60)
     print("  Final Test Evaluation")
     print("=" * 60)
@@ -374,7 +390,7 @@ def train():
     with open(SAVE_PATH / "training_history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    print(f"\n  ✅ Saved to: {SAVE_PATH}")
+    print(f"\n  ✅ Done. Model saved to: {SAVE_PATH}")
     print("=" * 60)
 
 
