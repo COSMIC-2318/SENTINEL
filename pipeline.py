@@ -64,7 +64,7 @@ def load_models():
     return {"module1": module1, "ensemble": ensemble}
 
 
-def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
+def run_sentinel(article_text: str, image_path: str, models: dict, has_image: bool = True) -> dict:
     """
     Main SENTINEL pipeline function.
 
@@ -174,9 +174,9 @@ def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
 
     module1_for_m4 = {
         "fake_prob":                m1_output['p_fake'],
-        "attention_score":          m1_output['attention_score'],
-        "mismatch_description":     m1_output['mismatch_description'],
-        "pretrained_mismatch_prob": m1_output.get('pretrained_mismatch_prob'),
+        "attention_score":          m1_output['attention_score'] if has_image else None,
+        "mismatch_description":     m1_output['mismatch_description'] if has_image else None,
+        "pretrained_mismatch_prob": m1_output.get('pretrained_mismatch_prob') if has_image else None,
     }
 
     module3_for_m4 = {
@@ -191,7 +191,8 @@ def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
         article_text=article_text,
         module1_output=module1_for_m4,
         evidence_score=m2_output,
-        module3_output=module3_for_m4
+        module3_output=module3_for_m4,
+        has_image=has_image
     )
 
     print("\n" + "=" * 60)
@@ -206,6 +207,7 @@ def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
     return {
         # Top-level verdict (used for the big verdict box)
         "final_verdict":  final_result["final_verdict"],
+        "has_image":      has_image,
 
         # Module 4 — the 3 passes
         "pass1":          final_result["initial_verdict"],

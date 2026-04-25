@@ -96,22 +96,23 @@ if analyze_clicked:
         st.stop()
 
     # Use uploaded image or fall back to blank grey image
-    if uploaded_image is not None:
+    has_image = uploaded_image is not None
+    if has_image:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             tmp.write(uploaded_image.read())
             tmp_image_path = tmp.name
-        cleanup = True
     else:
         blank = Image.fromarray(np.ones((224, 224, 3), dtype=np.uint8) * 128)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             blank.save(tmp.name)
             tmp_image_path = tmp.name
-        cleanup = True
+    cleanup = True
 
     with st.spinner("Analyzing... this may take 30–60 seconds"):
         result = run_sentinel(
             article_text=article_text,
             image_path=tmp_image_path,
+            has_image=has_image,
             models=models
         )
 
@@ -149,16 +150,19 @@ if analyze_clicked:
 
         # Module 1
         st.markdown("**Module 1 — Multimodal Encoder**")
-        m1   = result.get("module1_output", {})
-        c1, c2, c3 = st.columns(3)
-        c1.metric("P(Fake)",        m1.get("fake_prob",       "N/A"))
-        c2.metric("Mismatch Score", m1.get("attention_score", "N/A"))
-        c3.metric("Verdict",        m1.get("verdict",         "N/A"))
-        pm = m1.get("pretrained_mismatch_prob")
-        if pm is not None:
-            st.caption(f"Pretrained image-text mismatch: {pm} | {m1.get('mismatch_description','')}")
+        m1 = result.get("module1_output", {})
+        if result.get("has_image"):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("P(Fake)",        m1.get("fake_prob",       "N/A"))
+            c2.metric("Mismatch Score", m1.get("attention_score", "N/A"))
+            c3.metric("Verdict",        m1.get("verdict",         "N/A"))
+            pm = m1.get("pretrained_mismatch_prob")
+            if pm is not None:
+                st.caption(f"Pretrained image-text mismatch: {pm} | {m1.get('mismatch_description','')}")
+            else:
+                st.caption(m1.get("mismatch_description", ""))
         else:
-            st.caption(m1.get("mismatch_description", ""))
+            st.caption("No image provided — image-text mismatch not evaluated. Text encoding still used for downstream modules.")
 
         st.markdown("---")
 

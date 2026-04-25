@@ -14,9 +14,9 @@ def run_llm(prompt):
     return response['message']['content']
 
 
-def constitutional_adjudicate(article_text, module1_output, evidence_score, module3_output):
+def constitutional_adjudicate(article_text, module1_output, evidence_score, module3_output, has_image=True):
     print("\n=== PASS 1: Generating Initial Verdict ===")
-    pass1_prompt = build_pass1_prompt(article_text, module1_output, evidence_score, module3_output)
+    pass1_prompt = build_pass1_prompt(article_text, module1_output, evidence_score, module3_output, has_image=has_image)
     initial_verdict = run_llm(pass1_prompt)
     print(initial_verdict)
 

@@ -1,6 +1,6 @@
 # prompts.py
 
-def build_pass1_prompt(article_text, module1_output, evidence_score, module3_output):
+def build_pass1_prompt(article_text, module1_output, evidence_score, module3_output, has_image=True):
 
     # ── Image-text mismatch ───────────────────────────────────
     pm = module1_output.get('pretrained_mismatch_prob')
@@ -54,15 +54,23 @@ def build_pass1_prompt(article_text, module1_output, evidence_score, module3_out
         "Domain trustworthiness: not available (no domain metadata for this article)"
     )
 
+    image_section = (
+        f"\nIMAGE-TEXT ANALYSIS:\n{mismatch_line}\n"
+        if has_image else
+        "\nIMAGE-TEXT ANALYSIS:\nNo image was provided — do not comment on image-text consistency.\n"
+    )
+
+    image_rule = (
+        "2. IMAGE-TEXT mismatch score above 0.6 reinforces a Fake/Likely Fake verdict.\n"
+        if has_image else ""
+    )
+
     return f"""You are a fact-checking analyst. Analyze this article using ONLY the data provided below.
 Do NOT invent claim labels, source names, or author details that are not in this data.
 
 ARTICLE:
 {article_text}
-
-IMAGE-TEXT ANALYSIS:
-{mismatch_line}
-
+{image_section}
 FACT-CHECKING RESULTS — PRIMARY SIGNAL (live Wikipedia, Tavily, Google Fact Check):
 {claim_summary}
 
@@ -70,9 +78,8 @@ NETWORK ANALYSIS — SUPPORTING SIGNAL:
 {network_lines}
 
 VERDICT DECISION RULES (apply in order):
-1. FACT-CHECKING RESULTS is the most important signal. If any claim was contradicted → lean Fake or Likely Fake. If all claims were supported → lean Real or Likely Real. If no claims were checked → rely on image-text mismatch.
-2. IMAGE-TEXT mismatch score above 0.6 reinforces a Fake/Likely Fake verdict.
-3. Network scores (GNN, ensemble) above 0.6 add supporting evidence for Fake.
+1. FACT-CHECKING RESULTS is the most important signal. If any claim was contradicted → lean Fake or Likely Fake. If all claims were supported → lean Real or Likely Real. If no claims were checked → rely on network signals.
+{image_rule}3. Network scores (GNN, ensemble) above 0.6 add supporting evidence for Fake.
 4. When signals conflict, trust FACT-CHECKING RESULTS over all others.
 
 Write an initial verdict using the exact claim texts above — do not invent any.
