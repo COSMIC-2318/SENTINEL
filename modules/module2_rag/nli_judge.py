@@ -1,11 +1,24 @@
-from transformers import pipeline
+# nli_judge.py — uses fine-tuned NLI from models/nli_finetuned/
+
+import torch
+from pathlib import Path
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+SENTINEL_ROOT  = Path(__file__).resolve().parent.parent.parent
+NLI_MODEL_PATH = SENTINEL_ROOT / "models" / "nli_finetuned"
+
+# Label ordering matches finetune_nli.py LIAR_TO_NLI mapping:
+# true/mostly-true → 0 (ENTAILMENT)
+# half-true        → 1 (NEUTRAL)
+# false/pants-fire → 2 (CONTRADICTION)
+ID2LABEL = {0: "ENTAILMENT", 1: "NEUTRAL", 2: "CONTRADICTION"}
 
 print("Loading NLI model...")
-nli_model = pipeline(
-    "text-classification",
-    model="cross-encoder/nli-roberta-base",
-    device=-1
+_tokenizer = AutoTokenizer.from_pretrained(str(NLI_MODEL_PATH))
+_model = AutoModelForSequenceClassification.from_pretrained(
+    str(NLI_MODEL_PATH), num_labels=3
 )
+_model.eval()
 print("NLI model loaded.")
 
 
@@ -16,18 +29,28 @@ def judge_claim(claim, evidence_list):
     """
     judgments = []
     for evidence in evidence_list:
-        result = nli_model(f"{evidence['text']} [SEP] {claim}")
-        label = result[0]['label'].upper()
-        score = result[0]['score']
+        enc = _tokenizer(
+            evidence['text'],
+            claim,
+            max_length=256,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        )
+        with torch.no_grad():
+            logits = _model(**enc).logits
+        probs   = torch.softmax(logits, dim=1)[0]
+        pred_id = probs.argmax().item()
+        label   = ID2LABEL[pred_id]
+        score   = probs[pred_id].item()
+
         judgments.append({
             "evidence":   evidence['text'],
             "label":      label,
             "confidence": round(score, 3)
         })
 
-    labels = [j['label'] for j in judgments]
-
-    # Overall verdict = whichever label appears most
+    labels       = [j['label'] for j in judgments]
     supported    = labels.count("ENTAILMENT")
     contradicted = labels.count("CONTRADICTION")
     neutral      = labels.count("NEUTRAL")
@@ -39,16 +62,17 @@ def judge_claim(claim, evidence_list):
     else:
         overall = "NEUTRAL"
 
-    summary = {
+    return {
         "claim":           claim,
         "supported":       supported,
         "contradicted":    contradicted,
         "neutral":         neutral,
         "overall_verdict": overall,
-        "avg_confidence":  round(sum(j['confidence'] for j in judgments) / len(judgments), 3),
+        "avg_confidence":  round(
+            sum(j['confidence'] for j in judgments) / len(judgments), 3
+        ),
         "judgments":       judgments
     }
-    return summary
 
 
 # --- Test ---

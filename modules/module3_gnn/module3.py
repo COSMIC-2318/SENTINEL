@@ -73,9 +73,9 @@ def run_module3(article_features=None, model=None):
         "fake_prob"        : round(fake_prob_val, 4),
         "real_prob"        : round(real_prob_val, 4),
         "verdict"          : verdict,
-        "author_flag"      : "Author credibility score below threshold",
-        "domain_flag"      : "Domain age and traffic rank flagged",
-        "claim_overlap"    : "Claim overlap detection active",
+        "author_flag"      : None,   # no real author data — graph uses placeholder nodes
+        "domain_flag"      : None,   # no real domain data
+        "claim_overlap"    : None,
         "article_embedding": x_dict["article"],
     }
 

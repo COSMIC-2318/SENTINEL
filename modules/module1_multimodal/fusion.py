@@ -1,9 +1,8 @@
 # modules/module1_multimodal/fusion.py
-# SENTINEL — Cross-Modal Attention Fusion Layer
-# Makes text "look at" image to detect mismatches
 
 import torch
 import torch.nn as nn
+from pathlib import Path
 
 class CrossModalAttention(nn.Module):
     def __init__(self, text_dim=768, image_dim=512, hidden_dim=256):
@@ -54,6 +53,72 @@ class CrossModalAttention(nn.Module):
         output = self.classifier(fused)  # [1, 2]
 
         return output, attention_score, fused
+
+
+class PretrainedCrossModal(nn.Module):
+    """
+    Mirrors the architecture from training/pretrain_module1.py.
+    Loads weights from models/cross_modal_pretrained/cross_modal_attention.pt.
+
+    Input:  CLIP text [B,512] + CLIP image [B,512]
+    Output: mismatch logit [B,1]  (sigmoid → probability)
+    Trained on NewsCLIPpings — detects image-text consistency mismatches.
+    """
+    def __init__(self, embed_dim=512, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=embed_dim, num_heads=num_heads,
+            dropout=dropout, batch_first=True
+        )
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ffn   = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim * 2, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 1),
+        )
+
+    def forward(self, text_emb: torch.Tensor,
+                image_emb: torch.Tensor) -> torch.Tensor:
+        text_q  = text_emb.unsqueeze(1)
+        image_k = image_emb.unsqueeze(1)
+        image_v = image_emb.unsqueeze(1)
+        attended, _ = self.cross_attention(text_q, image_k, image_v)
+        attended    = self.norm1(attended + text_q)
+        ffn_out     = self.ffn(attended)
+        ffn_out     = self.norm2(ffn_out + attended)
+        fused       = ffn_out.squeeze(1)
+        combined    = torch.cat([fused, image_emb], dim=1)
+        return self.classifier(combined)
+
+
+def load_pretrained_cross_modal() -> PretrainedCrossModal:
+    """
+    Loads the pretrained cross-modal attention weights.
+    Returns None if weights file is not found.
+    """
+    weights_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "models" / "cross_modal_pretrained" / "cross_modal_attention.pt"
+    )
+    if not weights_path.exists():
+        print(f"  [Module1] Pretrained cross-modal weights not found: {weights_path}")
+        return None
+
+    model = PretrainedCrossModal()
+    state = torch.load(str(weights_path), map_location="cpu")
+    model.load_state_dict(state)
+    model.eval()
+    print("  [Module1] Pretrained cross-modal attention loaded.")
+    return model
 
 
 # Quick test

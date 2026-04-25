@@ -4,7 +4,35 @@
 import sys
 import os
 import torch
+import torch.nn as nn
+from pathlib import Path
 from PIL import Image
+
+SENTINEL_ROOT     = Path(__file__).resolve().parent
+CLASSIFIER_PATH   = SENTINEL_ROOT / "models" / "sentinel_joint_1" / "best_model.pt"
+
+
+class _SentinelClassifier(nn.Module):
+    """Matches training/train.py SentinelClassifier (9→32→1)."""
+    def __init__(self):
+        super().__init__()
+        self.classifier = nn.Sequential(
+            nn.Linear(9, 32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 1)
+        )
+    def forward(self, x):
+        return self.classifier(x)
+
+
+def _load_ensemble_classifier():
+    if not CLASSIFIER_PATH.exists():
+        print(f"  [Pipeline] Ensemble classifier not found: {CLASSIFIER_PATH}")
+        return None
+    clf = _SentinelClassifier()
+    ckpt = torch.load(str(CLASSIFIER_PATH), map_location="cpu")
+    clf.load_state_dict(ckpt["classifier_state"])
+    clf.eval()
+    print(f"  [Pipeline] Ensemble classifier loaded (Val F1={ckpt.get('val_f1', '?'):.3f})")
+    return clf
 
 # ─────────────────────────────────────────
 # Tell Python where each module lives
@@ -30,9 +58,10 @@ def load_models():
     Returns a dict so run_sentinel() can access them.
     """
     print("Initializing SENTINEL pipeline...")
-    module1 = Module1()
+    module1    = Module1()
+    ensemble   = _load_ensemble_classifier()
     print("Pipeline ready.")
-    return {"module1": module1}
+    return {"module1": module1, "ensemble": ensemble}
 
 
 def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
@@ -48,7 +77,8 @@ def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
         structured dict with all 4 module outputs
     """
 
-    module1 = models["module1"]
+    module1  = models["module1"]
+    ensemble = models.get("ensemble")
 
     print("=" * 60)
     print("SENTINEL — Starting Analysis")
@@ -116,21 +146,45 @@ def run_sentinel(article_text: str, image_path: str, models: dict) -> dict:
     print(f"  Fake Probability: {m3_output['fake_prob']}")
 
     # ─────────────────────────────────────────
+    # ENSEMBLE CLASSIFIER — aggregated signal
+    # ─────────────────────────────────────────
+    ensemble_prob = None
+    if ensemble is not None:
+        features = torch.tensor([[
+            float(m1_output['p_fake']),
+            float(m1_output['attention_score']),
+            float(m2_output['claims_supported']),
+            float(m2_output['claims_contradicted']),
+            float(m2_output['claims_neutral']),
+            float(m2_output['claims_filtered']),
+            float(m2_output['avg_confidence']),
+            float(m2_output['total_claims']),
+            float(m3_output['fake_prob']),
+        ]])
+        with torch.no_grad():
+            ensemble_prob = round(
+                torch.sigmoid(ensemble(features)).item(), 4
+            )
+        print(f"\n[ENSEMBLE] Aggregated fake probability: {ensemble_prob}")
+
+    # ─────────────────────────────────────────
     # MODULE 4 — Constitutional Adjudicator
     # ─────────────────────────────────────────
     print("\n[MODULE 4] Constitutional Adjudication...")
 
     module1_for_m4 = {
-        "fake_prob":            m1_output['p_fake'],
-        "attention_score":      m1_output['attention_score'],
-        "mismatch_description": m1_output['mismatch_description']
+        "fake_prob":                m1_output['p_fake'],
+        "attention_score":          m1_output['attention_score'],
+        "mismatch_description":     m1_output['mismatch_description'],
+        "pretrained_mismatch_prob": m1_output.get('pretrained_mismatch_prob'),
     }
 
     module3_for_m4 = {
         "fake_prob":     m3_output['fake_prob'],
         "author_flag":   m3_output['author_flag'],
         "domain_flag":   m3_output['domain_flag'],
-        "claim_overlap": m3_output['claim_overlap']
+        "claim_overlap": m3_output['claim_overlap'],
+        "ensemble_prob": ensemble_prob,
     }
 
     final_result = constitutional_adjudicate(

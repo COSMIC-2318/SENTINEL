@@ -20,14 +20,22 @@ class ImageEncoder:
         Takes a PIL Image
         Returns a [1, 512] tensor — the image meaning vector
         """
-        # Step 1 — Preprocess (resize, normalize)
         image_input = self.preprocess(image).unsqueeze(0)  # [1, 3, 224, 224]
-
-        # Step 2 — Pass through CLIP ViT
         with torch.no_grad():
             image_vector = self.model.encode_image(image_input)  # [1, 512]
-
         return image_vector
+
+    def encode_text(self, text: str) -> torch.Tensor:
+        """
+        Encodes text using CLIP's text encoder.
+        Returns a [1, 512] tensor in the same embedding space as encode().
+        Used by the pretrained cross-modal attention layer.
+        """
+        tokenizer   = open_clip.get_tokenizer('ViT-B-32')
+        text_tokens = tokenizer([text])
+        with torch.no_grad():
+            text_vector = self.model.encode_text(text_tokens)  # [1, 512]
+        return text_vector.float()
 
 
 # Quick test — run this file directly to verify it works

@@ -6,17 +6,17 @@ import torch
 from PIL import Image
 from text_encoder import TextEncoder
 from image_encoder import ImageEncoder
-from fusion import CrossModalAttention
+from fusion import CrossModalAttention, load_pretrained_cross_modal
 
 
 class Module1:
     def __init__(self):
         print("Loading Module 1 — Multimodal Encoder...")
 
-        # Load all three components
-        self.text_encoder  = TextEncoder()
-        self.image_encoder = ImageEncoder()
-        self.fusion        = CrossModalAttention()
+        self.text_encoder       = TextEncoder()
+        self.image_encoder      = ImageEncoder()
+        self.fusion             = CrossModalAttention()
+        self.pretrained_cm      = load_pretrained_cross_modal()  # may be None
 
         print("Module 1 ready!")
 
@@ -45,7 +45,7 @@ class Module1:
             # Step 5 — Verdict
         verdict = "FAKE" if p_fake > 0.5 else "REAL"
 
-        # Step 6 — Interpret attention score for downstream modules
+        # Step 6 — Interpret attention score
         attention_val = attention_score.item()
 
         if attention_val > 0.75:
@@ -57,15 +57,30 @@ class Module1:
         else:
             mismatch_description = "Very low — image appears to directly match article text"
 
+        # Step 7 — Pretrained cross-modal mismatch score (NewsCLIPpings trained)
+        pretrained_mismatch_prob = None
+        if self.pretrained_cm is not None:
+            try:
+                clip_text_vec = self.image_encoder.encode_text(text)   # [1, 512]
+                clip_img_vec  = image_vector.float()                    # [1, 512]
+                with __import__('torch').no_grad():
+                    logit = self.pretrained_cm(clip_text_vec, clip_img_vec)
+                pretrained_mismatch_prob = round(
+                    __import__('torch').sigmoid(logit).item(), 4
+                )
+            except Exception as e:
+                print(f"  [Module1] Pretrained cross-modal failed: {e}")
+
         return {
-        "verdict":              verdict,
-        "p_real":               round(p_real, 4),
-        "p_fake":               round(p_fake, 4),
-        "attention_score":      round(attention_val, 4),
-        "mismatch_description": mismatch_description,
-        "fusion_vector":        fusion_vector,    # ← ADD THIS LINE
-        "text_vector":          text_vector,
-        "image_vector":         image_vector
+            "verdict":                  verdict,
+            "p_real":                   round(p_real, 4),
+            "p_fake":                   round(p_fake, 4),
+            "attention_score":          round(attention_val, 4),
+            "mismatch_description":     mismatch_description,
+            "pretrained_mismatch_prob": pretrained_mismatch_prob,
+            "fusion_vector":            fusion_vector,
+            "text_vector":              text_vector,
+            "image_vector":             image_vector,
         }
 
 # Full pipeline test

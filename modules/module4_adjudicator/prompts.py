@@ -2,99 +2,133 @@
 
 def build_pass1_prompt(article_text, module1_output, evidence_score, module3_output):
 
-    # Format each claim
-    claims_breakdown = ""
-    for i, c in enumerate(evidence_score["claims"], 1):
-        claims_breakdown += f"""
-  Claim {i}: "{c['claim']}"
-  Verdict:    {c['verdict']}
-  Evidence:   {c['evidence']}
-  Confidence: {c['confidence']}
-"""
+    # ── Image-text mismatch ───────────────────────────────────
+    pm = module1_output.get('pretrained_mismatch_prob')
+    if pm is not None:
+        mismatch_line = (
+            f"Pretrained mismatch score: {pm} (0=consistent, 1=mismatched). "
+            f"{module1_output['mismatch_description']}."
+        )
+    else:
+        mismatch_line = (
+            f"Fusion mismatch score: {module1_output['attention_score']}. "
+            f"{module1_output['mismatch_description']}."
+        )
 
-    return f"""
-You are a fact-checking analyst. You have been given the following signals about a news article:
+    # ── Claim verification ────────────────────────────────────
+    claims = evidence_score.get("claims", [])
+    if claims:
+        claim_lines = ""
+        for i, c in enumerate(claims, 1):
+            claim_lines += (
+                f"\n  Claim {i}: \"{c['claim']}\"\n"
+                f"  Result: {c['verdict']} | Confidence: {c['confidence']}\n"
+                f"  Evidence: {c['evidence'][:200]}\n"
+            )
+        claim_summary = (
+            f"{len(claims)} claims checked — "
+            f"{evidence_score['claims_supported']} supported, "
+            f"{evidence_score['claims_contradicted']} contradicted, "
+            f"{evidence_score['claims_neutral']} neutral.\n"
+            f"{claim_lines}"
+        )
+    else:
+        claim_summary = (
+            "No verifiable factual claims could be extracted from this article. "
+            "Do NOT invent, label, or reference any claims. "
+            "Base the verdict on image-text mismatch and network signals only."
+        )
 
-ARTICLE TEXT:
+    # ── Network / graph ───────────────────────────────────────
+    ensemble_prob = module3_output.get('ensemble_prob')
+    gnn_prob      = module3_output.get('fake_prob', 'N/A')
+
+    network_lines = f"GNN fake probability score: {gnn_prob} (1.0 = likely fake, 0.0 = likely real)\n"
+    if ensemble_prob is not None:
+        network_lines += (
+            f"Ensemble classifier score: {ensemble_prob} "
+            f"(trained on FakeNewsNet+WELFake — combines all signals)\n"
+        )
+    network_lines += (
+        "Author credibility: not available (no author metadata for this article)\n"
+        "Domain trustworthiness: not available (no domain metadata for this article)"
+    )
+
+    return f"""You are a fact-checking analyst. Analyze this article using ONLY the data provided below.
+Do NOT invent claim labels, source names, or author details that are not in this data.
+
+ARTICLE:
 {article_text}
 
-SIGNAL 1 — Multimodal Analysis:
-Fake Probability (text + image): {module1_output['fake_prob']}
-Image-Text Mismatch Score: {module1_output['attention_score']}
-Mismatch Assessment: {module1_output['mismatch_description']}
+IMAGE-TEXT ANALYSIS:
+{mismatch_line}
 
-SIGNAL 2 — Claim Verification (RAG):
-Total claims extracted: {len(evidence_score['claims'])}
-Average NLI confidence: {evidence_score['avg_confidence']}
+FACT-CHECKING RESULTS — PRIMARY SIGNAL (live Wikipedia, Tavily, Google Fact Check):
+{claim_summary}
 
-Per-claim breakdown:
-{claims_breakdown}
+NETWORK ANALYSIS — SUPPORTING SIGNAL:
+{network_lines}
 
-SIGNAL 3 — Graph Analysis:
-Fake Probability (graph): {module3_output['fake_prob']}
-Author History: {module3_output['author_flag']}
-Domain Trustworthiness: {module3_output['domain_flag']}
-Claim Network: {module3_output['claim_overlap']}
+VERDICT DECISION RULES (apply in order):
+1. FACT-CHECKING RESULTS is the most important signal. If any claim was contradicted → lean Fake or Likely Fake. If all claims were supported → lean Real or Likely Real. If no claims were checked → rely on image-text mismatch.
+2. IMAGE-TEXT mismatch score above 0.6 reinforces a Fake/Likely Fake verdict.
+3. Network scores (GNN, ensemble) above 0.6 add supporting evidence for Fake.
+4. When signals conflict, trust FACT-CHECKING RESULTS over all others.
 
-Based on all three signals, write an initial verdict. Include:
-1. Overall assessment (Fake / Likely Fake / Uncertain / Likely Real / Real)
-2. Name the SPECIFIC claims that were contradicted or unsupported
-3. Reference the image-text mismatch finding explicitly
-4. Reference the author and domain red flags explicitly
-5. A recommended action (Flag / Human Review / Suppress / No Action)
+Write an initial verdict using the exact claim texts above — do not invent any.
+Include:
+1. Overall label — choose EXACTLY ONE: Fake, Likely Fake, Uncertain, Likely Real, Real
+2. Which specific claims (use the exact text) were contradicted or unsupported — or state "no claims were checked"
+3. What the image-text mismatch score means for this article
+4. A recommended action — choose ONE: Flag, Human Review, Suppress, No Action
 """
 
 
 def build_pass2_prompt(initial_verdict):
-    return f"""
-You are a senior editorial auditor reviewing the following fact-check verdict:
+    return f"""You are a senior editorial auditor reviewing this fact-check verdict:
 
 {initial_verdict}
 
-Critique this verdict against these 5 constitutional principles.
-For each principle, state PASSES or FAILS and why:
+Check each principle. State PASSES or FAILS and why:
 
 PRINCIPLE 1 — Evidence Fidelity:
-Does the verdict name the specific claims that were contradicted or unsupported?
+Does the verdict cite only evidence that was actually provided? No invented claim labels or source names?
 
 PRINCIPLE 2 — Uncertainty Acknowledgment:
-If any fake probability was below 0.75, does the verdict acknowledge uncertainty
-instead of stating a definitive conclusion?
+If any probability is below 0.75, does the verdict use hedged language (likely, possibly, uncertain)?
 
 PRINCIPLE 3 — Modality Consistency:
-Does the verdict explicitly mention the image-text mismatch finding and its score?
+Does the verdict mention the image-text mismatch score and what it means?
 
-PRINCIPLE 4 — Graph Coherence:
-Does the verdict mention the author history, domain age, and claim network overlap?
+PRINCIPLE 4 — Honest Gaps:
+If no claims were verified or no author data was available, does the verdict say so honestly?
 
 PRINCIPLE 5 — Bias vs Falsehood:
-Does the verdict distinguish between factually false claims and factually accurate
-claims presented with bias?
+Does the verdict separate factually false claims from biased-but-true framing?
 
-For each FAIL, state exactly what must be corrected in the revised verdict.
+For each FAIL, state exactly what to correct.
 """
 
 
 def build_pass3_prompt(initial_verdict, critique):
-    return f"""
-You are a fact-checking analyst. You wrote the following initial verdict:
+    return f"""You wrote this initial verdict:
 
 {initial_verdict}
 
-You then received this critique:
+You received this critique:
 {critique}
 
-Now write a REVISED final verdict that addresses every FAIL from the critique.
+Write the REVISED final verdict fixing every FAIL. Use ONLY data from the original analysis — no invented details.
 
-Your output must follow this exact structure:
+Follow this EXACT format and stop after RECOMMENDED ACTION. Do not add any extra text.
+Write the REASONING bullets in plain English for a general reader — no technical jargon, no signal numbers, no model names.
 
-VERDICT: [Fake / Likely Fake / Uncertain / Likely Real / Real]
-CONFIDENCE: [High / Medium / Low]
+VERDICT: (choose ONE: Fake, Likely Fake, Uncertain, Likely Real, Real)
+CONFIDENCE: (choose ONE: High, Medium, Low)
 
 REASONING:
-- Multimodal signal: [specific mismatch finding with score]
-- Claim verification: [name each contradicted/unsupported claim with its evidence]
-- Graph signal: [author history + domain age + claim overlap]
+- (one plain-English sentence about whether the image matches the article)
+- (one plain-English sentence about what the fact-checking found — name the actual claim if one was checked)
+- (one plain-English sentence about the overall reliability signals)
 
-RECOMMENDED ACTION: [Flag for human review / Suppress / No action / Escalate]
-"""
+RECOMMENDED ACTION: (choose ONE: Flag for human review, Suppress, No action, Escalate)"""

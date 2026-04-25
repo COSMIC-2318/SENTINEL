@@ -5,7 +5,13 @@ nlp = spacy.load("en_core_web_sm")
 ASSERTIVE_VERBS = {
     "confirm", "announce", "sign", "launch", "kill", "discover",
     "arrest", "declare", "release", "publish", "reveal", "report",
-    "state", "claim", "say", "warn", "approve", "reject", "ban"
+    "state", "claim", "say", "warn", "approve", "reject", "ban",
+    "win", "won", "lose", "lost", "defeat", "beat", "elect", "vote",
+    "lead", "gain", "secure", "capture", "sweep", "take", "hold",
+    "retain", "fail", "fall", "drop", "rise", "increase", "decrease",
+    "pass", "block", "file", "accuse", "charge", "convict",
+    "resign", "appoint", "suspend", "fire", "hire", "merge",
+    "die", "kill", "attack", "strike", "protest", "rally", "summit"
 }
 
 def extract_claims(article_text):
@@ -17,16 +23,19 @@ def extract_claims(article_text):
     claims = []
 
     for sentence in doc.sents:
-
-        # Condition 1 — sentence must have at least one named entity
         has_entity = len(sentence.ents) > 0
-
-        # Condition 2 — sentence must have at least one assertive verb
         sentence_lemmas = [token.lemma_.lower() for token in sentence]
         has_assertive_verb = any(verb in sentence_lemmas for verb in ASSERTIVE_VERBS)
 
         if has_entity and has_assertive_verb:
             claims.append(sentence.text.strip())
+
+    # Fallback for short articles or all-caps text where NER fails:
+    # if nothing extracted, treat the whole text as one claim
+    if not claims:
+        stripped = article_text.strip()
+        if stripped:
+            claims.append(stripped[:300])
 
     return claims
 
